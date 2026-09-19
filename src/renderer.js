@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '0.8.1';
+  const VERSION = '0.8.2';
   const GLOBAL_KEY = '__BETTER_CODEX__';
   const STORAGE_KEY = 'better-codex:v1:colors';
   const STYLE_ID = 'better-codex-highlight-style';
@@ -71,6 +71,10 @@
   style.id = STYLE_ID;
   style.textContent = `
     .${COLOR_CLASS} {
+      background-image: linear-gradient(
+        color-mix(in srgb, var(--better-codex-color) 18%, transparent),
+        color-mix(in srgb, var(--better-codex-color) 18%, transparent)
+      ) !important;
       box-shadow: inset 3px 0 0 var(--better-codex-color) !important;
     }
   `;

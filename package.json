@@ -1,6 +1,6 @@
 {
   "name": "better-codex",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "description": "Local UI enhancements for the Codex/ChatGPT desktop app.",
   "type": "module",

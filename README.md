@@ -15,7 +15,7 @@ BetterCodex 是一个面向 Codex / ChatGPT Desktop 的本地 UI 增强工具。
 - 颜色配置保存在本地 `localStorage`，不上传远端。
 - 不修改官方 `.app` 或 `app.asar`。
 
-高亮样式保持克制：只增加左侧色条，不覆盖 Codex 自己的 selected / hover 背景。
+高亮样式保持克制：整行使用对应颜色的轻量透明背景，并保留左侧色条；文字颜色不变。
 
 ## UI 技术方案
 
