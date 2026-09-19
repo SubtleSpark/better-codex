@@ -167,10 +167,9 @@ async function injectTarget(target) {
   });
 
   if (value?.status === 'installed') {
-    const targetName = target.title || target.url || target.id;
     if (!injectedTargets.has(target.id)) {
       injectedTargets.add(target.id);
-      console.log(`[BetterCodex] injected into: ${targetName} (${value.version})`);
+      console.log(`[BetterCodex] injected into Codex renderer (${value.version})`);
     }
   }
 }
