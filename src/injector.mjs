@@ -2,8 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const rendererPath = path.join(__dirname, 'renderer.js');
+const srcDir = path.dirname(fileURLToPath(import.meta.url));
+const rootDir = path.resolve(srcDir, '..');
+const rendererPath = path.join(rootDir, 'dist/renderer.js');
+const vendorPath = path.join(rootDir, 'dist/vendor.js');
 
 function parseArgs(argv) {
   const args = { host: '127.0.0.1', port: 9347, watch: false };
@@ -33,7 +35,13 @@ if (args.host !== '127.0.0.1' && args.host !== 'localhost') {
   throw new Error('For safety, BetterCodex only connects to loopback CDP (127.0.0.1/localhost).');
 }
 
-const source = await fs.readFile(rendererPath, 'utf8');
+const [source, vendorSource] = await Promise.all([
+  fs.readFile(rendererPath, 'utf8'),
+  fs.readFile(vendorPath, 'utf8'),
+]).catch(() => {
+  throw new Error('dist bundle not found. Run npm install && npm run build first.');
+});
+
 const endpoint = `http://${args.host}:${args.port}`;
 const injectedTargets = new Set();
 let stopping = false;
@@ -106,20 +114,63 @@ async function withCdp(target, fn) {
 }
 
 async function injectTarget(target) {
-  const expression = `${source}\n//# sourceURL=better-codex-renderer.js`;
-  const result = await withCdp(target, (call) => call('Runtime.evaluate', {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-    userGesture: false,
-  }));
+  const value = await withCdp(target, async (call) => {
+    const existing = await call('Runtime.evaluate', {
+      expression: 'window.__BETTER_CODEX__ ? { status: "installed", version: window.__BETTER_CODEX__.version } : null;',
+      returnByValue: true,
+    });
 
-  const value = result?.result?.value;
-  if (value && value.status === 'installed') {
+    if (existing?.result?.value) {
+      await call('Runtime.evaluate', {
+        expression: 'window.__BETTER_CODEX__?.scan?.(); true;',
+        returnByValue: true,
+      });
+      return existing.result.value;
+    }
+
+    const vendorState = await call('Runtime.evaluate', {
+      expression: `(() => {
+        const tags = ['wa-button', 'wa-color-picker', 'wa-popover'];
+        const present = tags.filter((tag) => customElements.get(tag));
+        return { present, missing: tags.filter((tag) => !customElements.get(tag)) };
+      })()`,
+      returnByValue: true,
+    });
+
+    const state = vendorState?.result?.value || { present: [], missing: [] };
+    if (state.missing.length > 0 && state.present.length > 0) {
+      throw new Error(`Web Awesome custom-element conflict: present=${state.present.join(',')} missing=${state.missing.join(',')}`);
+    }
+
+    if (state.missing.length > 0) {
+      await call('Runtime.evaluate', {
+        expression: `${vendorSource}\n//# sourceURL=better-codex-vendor.js`,
+        awaitPromise: true,
+        returnByValue: false,
+        userGesture: false,
+      });
+    }
+
+    await call('Runtime.evaluate', {
+      expression: `${source}\n//# sourceURL=better-codex-renderer.js`,
+      awaitPromise: true,
+      returnByValue: false,
+      userGesture: false,
+    });
+
+    const probe = await call('Runtime.evaluate', {
+      expression: 'window.__BETTER_CODEX__ ? { status: "installed", version: window.__BETTER_CODEX__.version } : null;',
+      returnByValue: true,
+    });
+
+    return probe?.result?.value;
+  });
+
+  if (value?.status === 'installed') {
     const targetName = target.title || target.url || target.id;
     if (!injectedTargets.has(target.id)) {
       injectedTargets.add(target.id);
-      console.log(`[BetterCodex] injected into: ${targetName}`);
+      console.log(`[BetterCodex] injected into: ${targetName} (${value.version})`);
     }
   }
 }
