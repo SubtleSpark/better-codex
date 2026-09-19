@@ -1,0 +1,15 @@
+{
+  "name": "better-codex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local UI enhancements for the Codex/ChatGPT desktop app.",
+  "type": "module",
+  "scripts": {
+    "start": "bash ./scripts/start-macos.sh",
+    "check": "node --check ./src/injector.mjs && node --check ./src/renderer.js && bash -n ./scripts/start-macos.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}
