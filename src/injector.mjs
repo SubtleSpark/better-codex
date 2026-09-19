@@ -7,6 +7,7 @@ const rendererPath = path.join(srcDir, 'renderer.js');
 
 function parseArgs(argv) {
   const args = { host: '127.0.0.1', port: 9347, watch: false };
+
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === '--host') args.host = argv[++i];
@@ -14,29 +15,38 @@ function parseArgs(argv) {
     else if (token === '--watch') args.watch = true;
     else if (token === '--help' || token === '-h') args.help = true;
   }
+
   return args;
 }
 
 function usage() {
-  console.log(`BetterCodex injector\n\nUsage:\n  node src/injector.mjs [--host 127.0.0.1] [--port 9347] [--watch]\n`);
+  console.log(
+    `BetterCodex injector\n\nUsage:\n  node src/injector.mjs [--host 127.0.0.1] [--port 9347] [--watch]\n`,
+  );
 }
 
 const args = parseArgs(process.argv.slice(2));
+
 if (args.help) {
   usage();
   process.exit(0);
 }
+
 if (!Number.isInteger(args.port) || args.port <= 0 || args.port > 65535) {
   throw new Error(`Invalid port: ${args.port}`);
 }
+
 if (args.host !== '127.0.0.1' && args.host !== 'localhost') {
-  throw new Error('For safety, BetterCodex only connects to loopback CDP (127.0.0.1/localhost).');
+  throw new Error(
+    'For safety, BetterCodex only connects to loopback CDP (127.0.0.1/localhost).',
+  );
 }
 
 const source = await fs.readFile(rendererPath, 'utf8');
 const endpoint = `http://${args.host}:${args.port}`;
 const debug = process.env.BETTER_CODEX_DEBUG === '1';
 const injectedTargets = new Set();
+
 let stopping = false;
 let waitingLogged = false;
 let lastTargetSignature = '';
@@ -45,9 +55,11 @@ async function listTargets() {
   const response = await fetch(`${endpoint}/json/list`, {
     signal: AbortSignal.timeout(1500),
   });
+
   if (!response.ok) {
     throw new Error(`CDP /json/list returned HTTP ${response.status}`);
   }
+
   return response.json();
 }
 
@@ -59,7 +71,9 @@ function isRendererTarget(target) {
 
   try {
     const url = new URL(rawUrl);
-    if (url.searchParams.get('initialRoute') === '/avatar-overlay') return false;
+    if (url.searchParams.get('initialRoute') === '/avatar-overlay') {
+      return false;
+    }
   } catch {
     return false;
   }
@@ -99,6 +113,7 @@ async function withCdp(target, fn) {
 
   ws.addEventListener('message', (event) => {
     let message;
+
     try {
       message = JSON.parse(String(event.data));
     } catch {
@@ -109,6 +124,7 @@ async function withCdp(target, fn) {
 
     const waiter = pending.get(message.id);
     if (!waiter) return;
+
     pending.delete(message.id);
 
     if (message.error) {
@@ -192,11 +208,35 @@ async function injectTarget(target) {
       'window.__BETTER_CODEX__?.drainDiagnostics?.() ?? [];',
     );
 
+    const diagnosticValues = Array.isArray(diagnostics?.result?.value)
+      ? diagnostics.result.value
+      : [];
+
+    if (
+      diagnosticValues.some(
+        (item) => item?.event === 'custom-color-picker-request',
+      )
+    ) {
+      const picker = await evaluate(
+        call,
+        'window.__BETTER_CODEX__?.showPendingCustomColorPicker?.() ?? { ok: false, reason: "api-unavailable" };',
+        { userGesture: true },
+      );
+
+      diagnosticValues.push({
+        at: new Date().toISOString(),
+        level: picker?.result?.value?.ok ? 'debug' : 'warn',
+        event: 'custom-color-picker-cdp',
+        ...(picker?.result?.value || {
+          ok: false,
+          reason: 'no-result',
+        }),
+      });
+    }
+
     return {
       value: probe?.result?.value,
-      diagnostics: Array.isArray(diagnostics?.result?.value)
-        ? diagnostics.result.value
-        : [],
+      diagnostics: diagnosticValues,
     };
   });
 
@@ -226,6 +266,7 @@ async function cleanup() {
 
   try {
     const targets = (await listTargets()).filter(isRendererTarget);
+
     await Promise.allSettled(
       targets.map((target) =>
         withCdp(target, (call) =>
@@ -300,9 +341,11 @@ async function tick() {
 }
 
 console.log(`[BetterCodex] connected to ${endpoint}`);
+
 if (debug) {
   console.log('[BetterCodex] debug logging enabled.');
 }
+
 console.log('[BetterCodex] Press Ctrl+C to stop.');
 
 if (!args.watch) {

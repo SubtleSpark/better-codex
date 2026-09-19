@@ -10,8 +10,9 @@ BetterCodex 是一个面向 Codex / ChatGPT Desktop 的本地 UI 增强工具。
 
 - 给左侧栏中的项目或会话设置自定义颜色。
 - Codex 原有右键菜单完整保留。
-- 在原生右键菜单中增加「颜色标记」入口。
-- 颜色子菜单提供常用 preset、自定义颜色和清除颜色。
+- 在原生右键菜单中增加「颜色」入口。
+- 7 个 preset 以彩色圆点显示，不显示颜色名称。
+- 提供自定义颜色和清除颜色。
 - 颜色配置保存在本地 `localStorage`，不上传远端。
 - 不修改官方 `.app` 或 `app.asar`。
 
@@ -73,8 +74,8 @@ Ctrl+C
 1. 启动 BetterCodex。
 2. 在左侧栏找到项目或会话。
 3. 正常右键对应项目或会话。
-4. 在 Codex 原生菜单中进入 **颜色标记**。
-5. 选择 preset color、**自定义颜色…**，或者 **清除颜色**。
+4. 在 Codex 原生菜单中进入 **颜色**。
+5. 在横向 Palette 中选择颜色圆点；末尾还提供自定义颜色和清除。
 
 Codex 原有右键功能不会被替换。
 
@@ -109,9 +110,9 @@ src/
 
 职责：
 
-- `src/injector.mjs`：连接 CDP，识别 renderer，负责注入和重新注入。
-- `src/renderer.js`：sidebar detection、颜色持久化、React menu provider 发现以及 native menu augmentation。
-- `scripts/start-macos.sh`：启动或重启 Desktop App，并开启 loopback CDP。
+- `src/injector.mjs`：连接 renderer CDP，识别 renderer，负责注入和重新注入；自定义颜色需要打开系统 picker 时，也通过这里补一次 `userGesture`。
+- `src/renderer.js`：sidebar detection、颜色持久化、React menu provider 发现、swatch icon 生成以及 native menu augmentation。
+- `scripts/start-macos.sh`：启动或重启 Desktop App，并开启 loopback renderer CDP。
 
 这个结构刻意保持简单：项目很小，不引入 bundler、framework 或 UI runtime dependency。
 
@@ -159,9 +160,9 @@ CDP 只绑定到：
 127.0.0.1
 ```
 
-但 CDP 本身没有 authentication。同一台机器上的其他本地进程理论上仍可能连接该 port。
+CDP 本身没有 authentication。同一台机器上的其他本地进程理论上仍可能连接该 port。
 
-停止 BetterCodex 只能移除注入 UI，不能修改已经运行中的 Desktop App 启动参数。需要完全关闭 CDP 时，请完全退出 Codex / ChatGPT Desktop，再正常重新启动。
+停止 BetterCodex 会移除 renderer 注入，但启动参数仍然存在。需要完全关闭 CDP 时，请完全退出 Codex / ChatGPT Desktop，再正常重新启动。
 
 ## 当前限制
 

@@ -21,7 +21,7 @@ BetterCodex capture-phase contextmenu
     ↓
 使用 React Intl context 解析原菜单文案
     ↓
-插入「颜色标记」submenu
+插入「颜色」submenu + PNG swatch icons
     ↓
 转换成 native menu item
     ↓
@@ -173,3 +173,31 @@ Codex 更新后如果颜色菜单失效，按这个顺序排查：
 6. `electronBridge.showContextMenu` 的入参 / 返回值是否变化。
 
 除非这些路径都不可用，不建议重新回到自定义 UI 或修改 `app.asar`。
+
+
+## 颜色菜单 UI
+
+颜色 preset 继续使用普通 macOS native submenu，不再 patch Electron main process。
+
+每个 preset：
+
+- 保留一个 zero-width label，以满足 Electron normal menu item 的 label 要求；
+- 实际视觉内容使用 16px 彩色 swatch icon；
+- 颜色名称只放在 tooltip 中；
+- 当前颜色通过 swatch 外圈强调。
+
+这样虽然不是 Finder 的横向 palette，但少一层 menu，也不需要额外 main-process inspector，维护成本明显更低。
+
+## 自定义颜色
+
+native menu 的选择结果异步回到 renderer 后，Chromium 的 transient user activation 可能已经失效，因此直接调用 `input[type=color].showPicker()` 不稳定。
+
+当前方案：
+
+1. renderer 记录 pending candidate；
+2. 发出 `custom-color-picker-request`；
+3. injector 通过 renderer CDP 调用 `Runtime.evaluate(..., { userGesture: true })`；
+4. renderer 再执行 `showPicker()`；
+5. color input 放在 viewport 内，避免 anchored picker 出现在屏幕外。
+
+这条路径已经在实际 Codex Desktop 中验证可以弹出系统颜色选择器。
