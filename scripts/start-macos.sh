@@ -6,7 +6,7 @@ PORT="${BETTER_CODEX_PORT:-9347}"
 HOST="127.0.0.1"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "BetterCodex MVP currently supports macOS only." >&2
+  echo "BetterCodex currently supports macOS only." >&2
   exit 1
 fi
 
@@ -15,11 +15,26 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required." >&2
+  exit 1
+fi
+
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 if (( NODE_MAJOR < 22 )); then
   echo "Node.js 22+ is required. Current: $(node -v)" >&2
   exit 1
 fi
+
+prepare_renderer() {
+  if [[ ! -d "$ROOT_DIR/node_modules/@awesome.me/webawesome" || ! -x "$ROOT_DIR/node_modules/.bin/esbuild" ]]; then
+    echo "[BetterCodex] Installing pinned UI dependencies for the first run..."
+    (cd "$ROOT_DIR" && npm install --no-audit --no-fund --no-package-lock)
+  fi
+
+  echo "[BetterCodex] Building renderer bundle..."
+  (cd "$ROOT_DIR" && npm run build --silent)
+}
 
 find_app() {
   if [[ -n "${BETTER_CODEX_APP:-}" ]]; then
@@ -37,6 +52,8 @@ find_app() {
 
   return 1
 }
+
+prepare_renderer
 
 APP_PATH="$(find_app || true)"
 if [[ -z "$APP_PATH" ]]; then
