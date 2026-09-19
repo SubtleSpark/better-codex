@@ -1,26 +1,53 @@
 # BetterCodex
 
-A small, local UI enhancement layer for the Codex/ChatGPT desktop app.
+BetterCodex 是一个面向 Codex / ChatGPT Desktop 的本地 UI 增强工具。
 
-## MVP feature
+当前 MVP 先解决一个很具体的问题：当项目和会话很多时，通过颜色高亮帮助快速定位目标项目或会话。
 
-Color-highlight projects and conversations in the left sidebar so large project/thread lists are easier to scan.
+> BetterCodex 是非官方项目，与 OpenAI 无关联。
 
-- Right-click a project or conversation.
-- Pick any color with the native color picker.
-- The color is stored locally in the desktop app profile.
-- No modification of the official `.app` or `app.asar`.
-- No runtime npm dependencies.
+## 当前功能
 
-> This is an unofficial experiment and is not affiliated with OpenAI.
+- 给左侧栏中的项目或会话设置自定义颜色。
+- 右键项目或会话即可打开颜色选择器。
+- 使用系统原生 color picker，不限制固定色板。
+- 颜色配置保存在本地，不上传远端。
+- 不修改官方 `.app` 或 `app.asar`。
+- 运行时没有额外 npm dependencies。
 
-## Current scope
+当前高亮样式为：左侧窄色条 + 很浅的同色背景。
 
-- macOS only for the MVP.
-- Node.js 22+.
-- Tested design: launch the official app with a loopback-only Chrome DevTools Protocol (CDP) port, then inject a small DOM enhancer.
+## 实现方式
 
-## Run
+BetterCodex 通过 Chrome DevTools Protocol（CDP）连接 Codex / ChatGPT Desktop 的 renderer，然后在运行时注入少量 DOM / CSS 增强代码。
+
+整体流程：
+
+```text
+启动 ChatGPT / Codex Desktop
+        ↓
+开启仅监听 127.0.0.1 的 CDP port
+        ↓
+BetterCodex injector 连接 renderer
+        ↓
+注入 sidebar enhancer
+        ↓
+识别 project / conversation
+        ↓
+读取并应用本地颜色配置
+```
+
+BetterCodex 不会修改官方应用安装包。
+
+## 环境要求
+
+当前 MVP：
+
+- macOS
+- Node.js 22+
+- Codex / ChatGPT Desktop
+
+## 运行
 
 ```bash
 git clone https://github.com/SubtleSpark/better-codex.git
@@ -28,87 +55,130 @@ cd better-codex
 ./better-codex
 ```
 
-If ChatGPT/Codex is already open without CDP enabled, the launcher asks whether it may restart the app.
+如果 Codex / ChatGPT Desktop 已经启动，但没有开启 BetterCodex 使用的 CDP port，启动脚本会询问是否重启应用。
 
-Keep the terminal process running while using BetterCodex. Press `Ctrl+C` to remove the injected UI and stop the watcher.
+BetterCodex 运行期间需要保持终端进程存在。
 
-You can also run:
+退出：
+
+```text
+Ctrl+C
+```
+
+退出时会尝试清理已注入的 UI。
+
+也可以通过 npm script 启动：
 
 ```bash
 npm run start
 ```
 
-No `npm install` is required because the MVP has no dependencies.
+当前没有 npm dependencies，因此不需要执行 `npm install`。
 
-## How to use
+## 使用方式
 
-1. Start BetterCodex.
-2. In the desktop app's left sidebar, right-click a project or conversation row.
-3. Choose a color and press **Apply**. Moving the color picker updates the highlight immediately.
-4. Use **Clear** to remove that item's color.
+1. 启动 BetterCodex。
+2. 在左侧栏中找到项目或会话。
+3. 右键对应项目或会话。
+4. 选择颜色。
+5. 点击 **Apply** 保存。
+6. 点击 **Clear** 可以移除颜色。
 
-The MVP applies a narrow color strip plus a very light tinted background.
+拖动 color picker 时，高亮会实时更新。
 
-## Persistence
+## 颜色持久化
 
-Colors are saved in the app renderer's `localStorage` under:
+颜色配置保存在 renderer 的 `localStorage`：
 
 ```text
 better-codex:v1:colors
 ```
 
-BetterCodex prefers stable IDs or links when the UI exposes them. If the app does not expose a stable ID/link for a row, the MVP falls back to its visible title. In that fallback case, renaming the project/conversation can make the old color association disappear.
+BetterCodex 会优先使用 UI 中可获得的稳定标识，例如：
 
-## Configuration
+- thread ID
+- conversation ID
+- project ID
+- workspace ID
+- link / href
 
-Default CDP port:
+如果当前 UI 没有暴露稳定 ID，则 MVP 会退化为使用可见标题作为 key。
+
+这种情况下，如果项目或会话被重命名，原来的颜色关联可能失效。
+
+## 配置
+
+默认 CDP port：
 
 ```text
 9347
 ```
 
-Override it:
+自定义 port：
 
 ```bash
 BETTER_CODEX_PORT=9450 ./better-codex
 ```
 
-If your desktop app is installed somewhere else:
+如果 Desktop App 安装在其他位置：
 
 ```bash
 BETTER_CODEX_APP="/path/to/ChatGPT.app" ./better-codex
 ```
 
-## Development
+## 开发
 
-Syntax checks:
+运行语法检查：
 
 ```bash
 npm run check
 ```
 
-Main files:
+主要文件：
 
 ```text
-scripts/start-macos.sh  # launch/restart app with loopback CDP
-src/injector.mjs        # discover renderer targets and inject/re-inject
-src/renderer.js         # sidebar detection, color picker, persistence and styles
+better-codex
+scripts/start-macos.sh
+src/injector.mjs
+src/renderer.js
 ```
 
-The renderer code is idempotent. The injector polls for renderer reloads and re-injects after app navigation/reload.
+职责：
 
-## Security note
+- `better-codex`：本地启动入口。
+- `scripts/start-macos.sh`：启动或重启 Desktop App，并开启 loopback CDP。
+- `src/injector.mjs`：发现 renderer target，负责注入和重新注入。
+- `src/renderer.js`：负责 sidebar 识别、颜色选择、持久化和样式。
 
-The CDP port is bound only to `127.0.0.1`, but CDP itself has no authentication. Another process running under your local user account could potentially connect while the app was launched with remote debugging enabled.
+renderer 注入逻辑是 idempotent 的。injector 会持续检查 renderer，在页面 reload 或 renderer 重建后重新注入。
 
-Stopping BetterCodex removes its UI, but it does **not** remove the remote-debugging flag from an already running app process. To close the CDP exposure window, fully quit ChatGPT/Codex and reopen it normally.
+## Security
 
-## Known MVP limitations
+CDP 只绑定到：
 
-- This relies on the current desktop UI/DOM and is not an official extension API.
-- A desktop app UI update may require adjusting the sidebar heuristics.
-- The context menu is intentionally limited to clickable rows in the left portion of the window. If a future UI makes project headers non-clickable, those headers may need a dedicated selector.
-- There is no sync/export/import UI yet.
+```text
+127.0.0.1
+```
+
+但 CDP 本身没有 authentication。
+
+因此，在 Desktop App 以 remote debugging 模式运行期间，同一台机器上的其他本地进程理论上也可能连接该 CDP port。
+
+停止 BetterCodex 只能移除 BetterCodex 注入的 UI，不能修改已经运行中的 Desktop App 启动参数。
+
+如果需要完全关闭 CDP，请：
+
+1. 完全退出 Codex / ChatGPT Desktop。
+2. 不通过 BetterCodex，正常重新启动应用。
+
+## MVP 限制
+
+- 当前依赖 Codex / ChatGPT Desktop 的现有 DOM 结构，并不是官方 Extension API。
+- Desktop App 更新后，sidebar selector / heuristic 可能需要调整。
+- 当前主要识别左侧区域中的 clickable rows。
+- 如果未来 project header 变成不可点击元素，需要增加专门的 selector。
+- 暂时没有 sync、export、import 功能。
+- 当前只支持 macOS。
 
 ## License
 
