@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '0.8.2';
+  const VERSION = '0.9.3';
   const GLOBAL_KEY = '__BETTER_CODEX__';
   const STORAGE_KEY = 'better-codex:v1:colors';
   const STYLE_ID = 'better-codex-highlight-style';
@@ -85,7 +85,7 @@
   colorInput.tabIndex = -1;
   colorInput.setAttribute('aria-hidden', 'true');
   colorInput.style.cssText =
-    'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px;top:-9999px;';
+    'position:fixed;width:18px;height:18px;opacity:0;pointer-events:none;left:8px;top:8px;z-index:2147483647;';
   document.body.appendChild(colorInput);
 
   function debugEnabled() {
@@ -416,7 +416,148 @@
   function openCustomColor(candidate) {
     pendingCustomColorCandidate = candidate;
     colorInput.value = currentColor(candidate) || DEFAULT_COLOR;
-    colorInput.click();
+
+    // Keep the native/browser picker anchor inside the visible viewport.
+    // Chromium can successfully open a picker for an off-screen input while
+    // rendering the anchored UI off-screen, which looks like "nothing happened".
+    const rect = candidate.element.getBoundingClientRect();
+    const left = Math.max(8, Math.min(window.innerWidth - 26, rect.right - 18));
+    const top = Math.max(8, Math.min(window.innerHeight - 26, rect.top + rect.height / 2 - 9));
+    colorInput.style.left = `${Math.round(left)}px`;
+    colorInput.style.top = `${Math.round(top)}px`;
+
+    // Native menu selection resolves asynchronously back into the renderer,
+    // so Chromium no longer considers it a transient user activation.
+    // Ask the CDP injector to reopen the picker with Runtime.evaluate's
+    // userGesture flag instead of relying on a synthetic element.click().
+    diagnose('request', 'custom-color-picker-request', {
+      isActive: Boolean(navigator.userActivation?.isActive),
+      hasBeenActive: Boolean(navigator.userActivation?.hasBeenActive),
+      anchor: {
+        left: Math.round(left),
+        top: Math.round(top),
+      },
+    });
+  }
+
+  function showPendingCustomColorPicker() {
+    if (!pendingCustomColorCandidate) {
+      return { ok: false, reason: 'no-pending-candidate' };
+    }
+
+    try {
+      if (typeof colorInput.showPicker === 'function') {
+        colorInput.showPicker();
+      } else {
+        colorInput.click();
+      }
+
+      return { ok: true };
+    } catch (error) {
+      const result = {
+        ok: false,
+        reason: error?.name || 'picker-error',
+        message: error instanceof Error ? error.message : String(error),
+      };
+
+      diagnose('warn', 'custom-color-picker-blocked', result);
+      return result;
+    }
+  }
+
+  const menuIconCache = new Map();
+
+  function menuIcon(key, draw) {
+    if (menuIconCache.has(key)) return menuIconCache.get(key);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+
+    const context = canvas.getContext('2d');
+    if (!context) return undefined;
+
+    context.clearRect(0, 0, 32, 32);
+    draw(context);
+
+    const value = canvas.toDataURL('image/png');
+    menuIconCache.set(key, value);
+    return value;
+  }
+
+  function colorSwatchIcon(color, selected) {
+    return menuIcon(`swatch:${color}:${selected ? 'selected' : 'idle'}`, (context) => {
+      if (selected) {
+        context.beginPath();
+        context.arc(16, 16, 13, 0, Math.PI * 2);
+        context.strokeStyle = 'rgba(0, 0, 0, 0.42)';
+        context.lineWidth = 2;
+        context.stroke();
+
+        context.beginPath();
+        context.arc(16, 16, 11.5, 0, Math.PI * 2);
+        context.strokeStyle = 'rgba(255, 255, 255, 0.96)';
+        context.lineWidth = 3;
+        context.stroke();
+      }
+
+      context.beginPath();
+      context.arc(16, 16, selected ? 8.5 : 10.5, 0, Math.PI * 2);
+      context.fillStyle = color;
+      context.fill();
+
+      if (!selected) {
+        context.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+        context.lineWidth = 1.5;
+        context.stroke();
+      }
+    });
+  }
+
+  function customColorIcon() {
+    return menuIcon('custom-color', (context) => {
+      const colors = PRESETS.map(([, color]) => color);
+
+      colors.forEach((color, index) => {
+        const start = -Math.PI / 2 + (index / colors.length) * Math.PI * 2;
+        const end = -Math.PI / 2 + ((index + 1) / colors.length) * Math.PI * 2;
+
+        context.beginPath();
+        context.moveTo(16, 16);
+        context.arc(16, 16, 10.5, start, end);
+        context.closePath();
+        context.fillStyle = color;
+        context.fill();
+      });
+
+      context.beginPath();
+      context.arc(16, 16, 10.5, 0, Math.PI * 2);
+      context.strokeStyle = 'rgba(255, 255, 255, 0.38)';
+      context.lineWidth = 1.5;
+      context.stroke();
+    });
+  }
+
+  function clearColorIcon() {
+    return menuIcon('clear-color', (context) => {
+      context.beginPath();
+      context.arc(16, 16, 10.5, 0, Math.PI * 2);
+      context.fillStyle = '#737378';
+      context.fill();
+      context.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+      context.lineWidth = 1.5;
+      context.stroke();
+
+      context.beginPath();
+      context.moveTo(12.5, 12.5);
+      context.lineTo(19.5, 19.5);
+      context.moveTo(19.5, 12.5);
+      context.lineTo(12.5, 19.5);
+      context.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+      context.lineWidth = 2.2;
+      context.lineCap = 'round';
+      context.stroke();
+    });
   }
 
   function buildColorMenu(candidate) {
@@ -424,10 +565,12 @@
 
     const submenu = PRESETS.map(([label, color]) => ({
       id: `better-codex-color-${color.slice(1).toLowerCase()}`,
-      type: 'checkbox',
-      checked: selected === color,
       enabled: true,
-      nativeLabel: label,
+      // Electron expects a label for normal menu items. A zero-width label
+      // keeps the native menu valid while letting the swatch carry the UI.
+      nativeLabel: '\u200B',
+      nativeTooltip: label,
+      icon: colorSwatchIcon(color, selected === color),
       onSelect: () => setColor(candidate, color),
     }));
 
@@ -441,23 +584,24 @@
         id: 'better-codex-color-custom',
         enabled: true,
         nativeLabel: '自定义颜色…',
+        nativeTooltip: '自定义颜色…',
+        icon: customColorIcon(),
         onSelect: () => openCustomColor(candidate),
       },
-    );
-
-    if (selected) {
-      submenu.push({
+      {
         id: 'better-codex-color-clear',
         enabled: true,
         nativeLabel: '清除颜色',
+        nativeTooltip: '清除颜色',
+        icon: clearColorIcon(),
         onSelect: () => clearColor(candidate),
-      });
-    }
+      },
+    );
 
     return {
       id: 'better-codex-color',
       enabled: true,
-      nativeLabel: '颜色标记',
+      nativeLabel: '颜色',
       submenu,
     };
   }
@@ -640,11 +784,15 @@
   }
 
   colorInput.addEventListener('input', () => {
-    if (!pendingCustomColorCandidate) return;
+    if (!pendingCustomColorCandidate || !colorInput.value) return;
 
-    if (colorInput.value) {
-      setColor(pendingCustomColorCandidate, colorInput.value);
-    }
+    // macOS can emit multiple input events while the picker stays open.
+    // Keep the candidate until the final change event so live preview and
+    // the user's final selection are both applied to the same sidebar row.
+    setColor(pendingCustomColorCandidate, colorInput.value);
+  });
+
+  colorInput.addEventListener('change', () => {
     pendingCustomColorCandidate = null;
   });
 
@@ -666,6 +814,7 @@
     scan,
     destroy,
     drainDiagnostics,
+    showPendingCustomColorPicker,
   };
 
   window[GLOBAL_KEY] = api;
