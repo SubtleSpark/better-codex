@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '0.9.3';
+  const VERSION = '0.9.4';
   const GLOBAL_KEY = '__BETTER_CODEX__';
   const STORAGE_KEY = 'better-codex:v1:colors';
   const STYLE_ID = 'better-codex-highlight-style';
@@ -70,6 +70,12 @@
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
+    /* 只缩进项目的会话容器，背景、文字和操作区一起内收；根级会话不受影响。 */
+    [data-app-action-sidebar-project-list-id] {
+      box-sizing: border-box !important;
+      padding-inline-start: 20px !important;
+    }
+
     .${COLOR_CLASS} {
       background-image: linear-gradient(
         color-mix(in srgb, var(--better-codex-color) 18%, transparent),
