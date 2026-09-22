@@ -1,12 +1,13 @@
 {
   "name": "better-codex",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "private": true,
   "description": "Local UI enhancements for the Codex/ChatGPT desktop app.",
   "type": "module",
   "scripts": {
     "start": "bash ./scripts/start-macos.sh",
-    "check": "node --check ./src/injector.mjs && node --check ./src/renderer.js && bash -n ./scripts/start-macos.sh"
+    "check": "node --check ./src/injector.mjs && node --check ./src/renderer.js && bash -n ./scripts/start-macos.sh",
+    "test:layout": "node --test tests/sidebar-hierarchy.test.mjs"
   },
   "engines": {
     "node": ">=22"

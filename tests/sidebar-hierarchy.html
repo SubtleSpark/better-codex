@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>BetterCodex sidebar hierarchy regression fixture</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 16px; font: 14px system-ui; background: #303030; color: #eee; }
+  #sidebar { width: 360px; }
+  .row { width: 100%; height: 32px; display: flex; align-items: center; border-radius: 8px; padding: 0 8px; }
+  .title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex: 1; min-width: 0; }
+  .thread .title { padding-inline-start: 24px; }
+  .action { flex: 0 0 16px; margin-inline-start: 4px; }
+  .row:hover { background-color: #444; }
+  .row[data-app-action-sidebar-thread-selected="true"] { background-color: #555; }
+  [data-app-action-sidebar-project-list-id] { width: 100%; padding: 0; }
+  #more { border: 0; background: none; color: inherit; padding: 8px 32px; }
+  #project-b { margin-top: 16px; }
+  #result { white-space: pre-wrap; }
+</style>
+<div id="sidebar">
+  <div role="listitem">
+    <div id="project-a" class="row" data-app-action-sidebar-project-row data-app-action-sidebar-project-id="a">策略发布审批</div>
+    <div id="children-a" data-app-action-sidebar-project-list-id="a">
+      <div role="list">
+        <div role="listitem"><div id="thread-a" class="row thread" role="button" data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="t1"><span class="title">暂停 | 梳理第二期数仓依赖指标</span><span class="action">↗</span></div></div>
+        <div role="listitem"><div id="thread-b" class="row thread" role="button" data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="t2" data-app-action-sidebar-thread-selected="true"><span class="title">定义策略中心 WebApp 接口</span><span class="action">↗</span></div></div>
+        <div role="listitem"><div id="thread-plain" class="row thread" data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="t3"><span class="title">未设置颜色的会话</span><span class="action">↗</span></div></div>
+      </div>
+      <button id="more">展开显示</button>
+    </div>
+  </div>
+  <div role="listitem">
+    <div id="project-b" class="row" data-app-action-sidebar-project-row data-app-action-sidebar-project-id="b">策略中心－版本对比优化</div>
+    <div id="children-b" data-app-action-sidebar-project-list-id="b" hidden>
+      <div id="thread-c" class="row thread" data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="t4"><span class="title">更新钉钉时效优化技术方案</span><span class="action">↗</span></div>
+    </div>
+  </div>
+  <section><h4>未归属项目</h4><div id="root-thread" class="row thread" data-app-action-sidebar-thread-row data-app-action-sidebar-thread-id="root"><span class="title">独立会话不缩进</span><span class="action">↗</span></div></section>
+</div>
+<pre id="result" data-result="pending">Running...</pre>
+<script>
+  const element = (id) => document.getElementById(id);
+  const rect = (id) => element(id).getBoundingClientRect();
+  const baseline = Object.fromEntries(['project-a', 'project-b', 'thread-a', 'thread-b', 'thread-plain', 'root-thread', 'more'].map(id => [id, { left: rect(id).left, right: rect(id).right, height: rect(id).height }]));
+  const key = 'better-codex:v1:colors';
+  const colors = {
+    'attr:data-app-action-sidebar-project-id:a': '#F05252',
+    'attr:data-app-action-sidebar-project-id:b': '#34D399',
+    'attr:data-app-action-sidebar-thread-id:t1': '#FBBF24',
+    'attr:data-app-action-sidebar-thread-id:t2': '#F05252',
+    'attr:data-app-action-sidebar-thread-id:root': '#3B82F6',
+  };
+  localStorage.setItem(key, JSON.stringify(colors));
+</script>
+<script src="../src/renderer.js"></script>
+<script>
+  // 验证真实 renderer 的 CSS 与生命周期，不模拟 CSS 计算。
+  (async () => {
+    let checks = 0;
+    function assert(condition, message) { if (!condition) throw new Error(message); checks++; }
+    function close(a, b) { return Math.abs(a - b) < 0.1; }
+    const paint = id => getComputedStyle(element(id)).backgroundImage;
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    assert(window.__BETTER_CODEX__, 'renderer 应安装成功');
+    for (const id of ['thread-a', 'thread-b', 'thread-plain']) {
+      assert(close(rect(id).left, baseline[id].left + 20), id + ' 左侧缩进一级');
+      assert(close(rect(id).right, baseline[id].right), id + ' 右边界不变');
+      assert(close(rect(id).height, baseline[id].height), id + ' 行高不变');
+    }
+    for (const id of ['project-a', 'project-b', 'root-thread']) {
+      assert(close(rect(id).left, baseline[id].left), id + ' 不缩进');
+      assert(close(rect(id).right, baseline[id].right), id + ' 宽度不变');
+    }
+    assert(close(rect('more').left, baseline.more.left + 20), '展开显示跟随会话列表缩进');
+    assert(paint('thread-a') !== 'none' && paint('project-a') !== 'none', '保留项目与会话背景');
+    assert(paint('thread-plain') === 'none', '无颜色会话不继承项目颜色');
+    assert(getComputedStyle(element('thread-b')).backgroundColor === 'rgb(85, 85, 85)', '保留原生选中背景');
+    assert(getComputedStyle(element('thread-a')).boxShadow.includes('inset'), '保留左侧色条');
+    assert(rect('thread-a').right <= rect('sidebar').right, '右侧操作区不溢出');
+
+    for (let i = 0; i < 5; i++) window.__BETTER_CODEX__.scan();
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '../src/renderer.js'; script.onload = resolve; script.onerror = reject;
+      document.body.appendChild(script);
+    });
+    assert(close(rect('thread-a').left, baseline['thread-a'].left + 20), '重复扫描和注入不累加缩进');
+    assert(document.querySelectorAll('#better-codex-highlight-style').length === 1, '样式仅有一份');
+
+    element('children-b').hidden = false;
+    assert(close(rect('thread-c').left, rect('project-b').left + 20), '展开项目自动应用缩进');
+    const added = element('thread-plain').cloneNode(true); added.id = 'added';
+    added.setAttribute('data-app-action-sidebar-thread-id', 'new');
+    element('children-b').appendChild(added);
+    await wait(120);
+    assert(close(rect('added').left, rect('project-b').left + 20), '新增会话自动应用缩进');
+
+    element('sidebar').style.width = '220px';
+    assert(close(rect('thread-a').right, rect('project-a').right), '窄侧栏右边界对齐');
+    assert(element('sidebar').scrollWidth === element('sidebar').clientWidth, '窄侧栏不产生横向溢出');
+    element('sidebar').style.width = '360px';
+
+    element('sidebar').appendChild(element('thread-b'));
+    assert(close(rect('thread-b').left, rect('project-a').left), '移出项目后取消缩进');
+    element('children-b').appendChild(element('thread-b'));
+    assert(close(rect('thread-b').left, rect('project-b').left + 20), '移动到另一个项目仍只缩进一级');
+    assert(localStorage.getItem(key) === JSON.stringify(colors), '不修改颜色配置');
+
+    window.__BETTER_CODEX__.destroy();
+    assert(close(rect('thread-a').left, baseline['thread-a'].left), '退出后还原原布局');
+    assert(!document.getElementById('better-codex-highlight-style'), '退出后移除样式');
+    assert(localStorage.getItem(key) === JSON.stringify(colors), '退出不删除颜色配置');
+    document.getElementById('result').dataset.result = 'passed';
+    document.getElementById('result').textContent = `${checks} layout assertions passed`;
+  })().catch(error => {
+    document.getElementById('result').dataset.result = 'failed';
+    document.getElementById('result').textContent = error.stack || String(error);
+  });
+</script>
