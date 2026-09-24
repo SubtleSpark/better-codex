@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PlantUmlBridge } from './plantuml/bridge.mjs';
 
 const srcDir = path.dirname(fileURLToPath(import.meta.url));
 const rendererPath = path.join(srcDir, 'renderer.js');
@@ -43,9 +44,16 @@ if (args.host !== '127.0.0.1' && args.host !== 'localhost') {
 }
 
 const source = await fs.readFile(rendererPath, 'utf8');
+const { version } = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const endpoint = `http://${args.host}:${args.port}`;
 const debug = process.env.BETTER_CODEX_DEBUG === '1';
 const injectedTargets = new Set();
+const plantuml = new PlantUmlBridge({
+  enabled: args.watch && process.env.BETTER_CODEX_PLANTUML !== '0',
+  debug,
+  rootSelector: process.env.BETTER_CODEX_PLANTUML_ROOT || null,
+});
+const plantumlFailures = new Set();
 
 let stopping = false;
 let waitingLogged = false;
@@ -234,6 +242,16 @@ async function injectTarget(target) {
       });
     }
 
+    try {
+      await plantuml.poll(target.id, (expression, options) => evaluate(call, expression, options));
+      plantumlFailures.delete(target.id);
+    } catch {
+      if (!plantumlFailures.has(target.id)) {
+        plantumlFailures.add(target.id);
+        console.warn('[BetterCodex:plantuml] 预览注入/通信失败，颜色功能不受影响；可开启 BETTER_CODEX_DEBUG=1 排查。');
+      }
+    }
+
     return {
       value: probe?.result?.value,
       diagnostics: diagnosticValues,
@@ -263,6 +281,7 @@ async function injectTarget(target) {
 async function cleanup() {
   if (stopping) return;
   stopping = true;
+  await plantuml.close();
 
   try {
     const targets = (await listTargets()).filter(isRendererTarget);
@@ -271,7 +290,7 @@ async function cleanup() {
       targets.map((target) =>
         withCdp(target, (call) =>
           call('Runtime.evaluate', {
-            expression: 'window.__BETTER_CODEX__?.destroy?.(); true;',
+            expression: 'window.__BETTER_CODEX_PLANTUML__?.destroy?.(); window.__BETTER_CODEX__?.destroy?.(); true;',
             returnByValue: true,
           }),
         ),
@@ -298,6 +317,7 @@ process.on('SIGTERM', async () => {
 async function tick() {
   const allTargets = await listTargets();
   const targets = allTargets.filter(isRendererTarget);
+  plantuml.retainTargets(new Set(targets.map(target => target.id)));
 
   if (targets.length === 0) {
     if (!waitingLogged) {
@@ -340,7 +360,7 @@ async function tick() {
   return succeeded;
 }
 
-console.log(`[BetterCodex] connected to ${endpoint}`);
+console.log(`[BetterCodex] v${version} connected to ${endpoint}`);
 
 if (debug) {
   console.log('[BetterCodex] debug logging enabled.');
