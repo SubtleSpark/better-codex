@@ -43,16 +43,24 @@ export async function browser() {
     await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
   try {
-    let port;
-    for (let i = 0; i < 150; i++) {
-      try { port = (await readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]; } catch {}
-      if (port) break;
-      if (spawnError || child.exitCode !== null) break;
+    let target;
+    let readinessError = '';
+    const deadline = Date.now() + 15000;
+    // 文件出现不等于 HTTP endpoint / 首个 page 已就绪；等待完整发现流程。
+    while (Date.now() < deadline && !spawnError && child.exitCode === null) {
+      try {
+        const [port, endpoint] = (await readFile(path.join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n');
+        if (!/^\d+$/.test(port) || !endpoint?.startsWith('/devtools/browser/')) throw new Error('Incomplete DevToolsActivePort');
+        const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        target = (await response.json()).find(x => x.type === 'page' && x.webSocketDebuggerUrl);
+        if (target) break;
+        readinessError = 'No page target yet';
+      } catch (error) { readinessError = `${error.message || error.name}: ${error.cause?.code || ''}`; }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    if (!port) throw new Error(`Chrome did not start (${executable}): ${spawnError?.message || stderr}`);
-    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json();
-    ws = new WebSocket(targets.find(x => x.type === 'page').webSocketDebuggerUrl);
+    if (!target) throw new Error(`Chrome CDP not ready (${executable}): ${spawnError?.message || readinessError}; ${stderr}`);
+    ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('CDP open timeout')), 3000);
       ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
