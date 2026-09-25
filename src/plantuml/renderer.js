@@ -1,12 +1,13 @@
 (() => {
   'use strict';
   const KEY = '__BETTER_CODEX_PLANTUML__';
-  const VERSION = '0.10.0';
+  const VERSION = '0.10.1';
   let options = window.__BETTER_CODEX_PLANTUML_OPTIONS__ || {};
   const previous = window[KEY];
   if (previous?.version === VERSION) { previous.configure?.(options); previous.scan(); return; }
   previous?.destroy?.();
 
+  const LANGUAGES = new Set(['plantuml', 'puml', 'plantuml-svg', 'puml-svg']);
   const SHELL = '[data-markdown-copy="code-block"]';
   const OWN = 'data-better-codex-plantuml-ui';
   const HIDDEN = 'data-better-codex-plantuml-source-hidden';
@@ -47,21 +48,33 @@
     const el = node instanceof Element ? node : node?.parentElement;
     return Boolean(el?.closest(`[${OWN}]`));
   }
+  function languageName(value) {
+    const name = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    return LANGUAGES.has(name) ? name : null;
+  }
   function language(block, code) {
+    // Obsidian 的 -svg fence 仍是 PlantUML 源码；复用同一个本地 SVG 引擎。
     for (const node of [code, code.closest('pre'), block, block.parentElement]) {
       if (!node) continue;
       for (const value of [node.getAttribute('data-language'), node.getAttribute('data-lang'),
         ...Array.from(node.classList).map(x => /^(?:language|lang)-(.+)$/i.exec(x)?.[1])]) {
-        if (/^(plantuml|puml)$/i.test(value || '')) return true;
+        const name = languageName(value);
+        if (name) return name;
       }
     }
-    // Codex CodeSnippet 可使用 div + code，而非 pre。只读原生 toolbar 的明确语言标题。
+    // 语言名可能是 toolbar 本身的文本，不一定包在子 span/div 中。
     const header = block.matches(SHELL)
       ? block.querySelector(':scope > [data-markdown-copy="exclude"]')
       : block.previousElementSibling;
-    return Boolean(header && !header.matches('pre, code') && !owned(header) &&
-      Array.from(header.querySelectorAll('span, div')).some(x =>
-        !x.closest('button') && /^(plantuml|puml)$/i.test(x.textContent.trim())));
+    // 不从上一个代码块或 Copy 按钮里猜语言。
+    if (!header || owned(header) || header.matches(`pre, code, button, ${SHELL}`) ||
+        header.querySelector(`pre, code, ${SHELL}`)) return null;
+    for (const node of [header, ...header.querySelectorAll('span, div')]) {
+      if (node.closest('button') || node.querySelector('button')) continue;
+      const name = languageName(node.textContent);
+      if (name) return name;
+    }
+    return null;
   }
   function sourceNode(block, code) {
     // 保留原生 Copy / 换行 toolbar，只隐藏代码区，不移动 React 管理的节点。
@@ -222,6 +235,8 @@
     catch { diagnose('warn', 'invalid-root-selector'); return; }
     const eligible = new Map();
     let preCount = 0;
+    let excludedBlocks = 0;
+    const languageCounts = Object.fromEntries([...LANGUAGES].map(name => [name, 0]));
     for (const root of roots) for (const pre of root.querySelectorAll(`pre, ${SHELL}`)) {
       // pre 嵌套在语义化 code-block 中时，外壳只处理一次。
       const shell = pre.closest(SHELL);
@@ -229,7 +244,9 @@
       preCount++;
       const code = pre.querySelector('code') || (pre.matches('pre') ? pre : null);
       if (!code) continue;
-      if (!excluded(pre) && language(pre, code)) eligible.set(pre, code);
+      if (excluded(pre)) { excludedBlocks++; continue; }
+      const name = language(pre, code);
+      if (name && !eligible.has(pre)) { eligible.set(pre, code); languageCounts[name]++; }
     }
     for (const state of states.values()) {
       if (eligible.get(state.pre) !== state.code || sourceNode(state.pre, state.code) !== state.sourceNode) remove(state);
@@ -244,8 +261,10 @@
         else if (state.pending && Date.now() - state.since > 45000) errorState(state, '等待本地渲染超时，请确认 BetterCodex 正在运行后重试。', 'BRIDGE_TIMEOUT');
       }
     }
-    const probe = `${preCount}:${eligible.size}`;
-    if (probe !== lastProbe) { lastProbe = probe; diagnose('debug', 'block-scan', { preCount, plantumlBlocks: eligible.size }); }
+    // 日志只包含结构计数和固定语言白名单；不包含文件路径或代码文本。
+    const summary = { rootCount: roots.length, preCount, plantumlBlocks: eligible.size, excludedBlocks, languageCounts };
+    const probe = JSON.stringify(summary);
+    if (probe !== lastProbe) { lastProbe = probe; diagnose('debug', 'block-scan', summary); }
   }
   function schedule(records) {
     if (records.every(r => owned(r.target) || (r.type === 'childList' &&
@@ -263,7 +282,10 @@
   }
   window[KEY] = {
     version: VERSION, session, scan, destroy, applyResults,
-    configure(next) { options = next || {}; },
+    configure(next) {
+      if (Boolean(next?.debug) !== Boolean(options.debug)) lastProbe = '';
+      options = next || {};
+    },
     drain() {
       // 在交给 Node 前丢弃已被重新渲染/移除的 block 请求。
       const valid = requests.splice(0).filter(r => Array.from(states.values()).some(s => s.id === r.id && s.revision === r.revision && s.pending));

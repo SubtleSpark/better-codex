@@ -7,7 +7,7 @@ npm ci --ignore-scripts
 ./better-codex
 ```
 
-然后在 Codex 中打开 `docs/PLANTUML-DEMO.md`，切换到 Markdown 的渲染预览。`plantuml` / `puml` fenced code block 旁会生成图片；图片加载成功后才隐藏源码。工具栏提供「源码 / 预览」「放大」「重试」。关闭 BetterCodex 时恢复原代码块，Markdown 文件不会被修改。
+然后在 Codex 中打开 `docs/PLANTUML-DEMO.md`，切换到 Markdown 的渲染预览。`plantuml` / `puml` / `plantuml-svg` / `puml-svg` fenced code block 旁会生成图片；图片加载成功后才隐藏源码。工具栏提供「源码 / 预览」「放大」「重试」。关闭 BetterCodex 时恢复原代码块，Markdown 文件不会被修改。
 
 首次安装 npm dependencies 需要联网；渲染不调用远程服务，不需要 Java、Graphviz binary、MCP server 或额外端口。原有颜色标记、缩进、原生右键菜单和系统 Color Picker 的逻辑不变。
 
@@ -22,7 +22,7 @@ BETTER_CODEX_DEBUG=1 ./better-codex
 BETTER_CODEX_PLANTUML_ROOT='#your-confirmed-preview-root' ./better-codex
 ```
 
-PlantUML 需要 injector 的 `--watch` 模式；`./better-codex` 已默认开启。启动日志显示工具版本 0.10.0，原 sidebar renderer 的内部版本可以仍为 0.9.4，这是独立模块，不是未更新。
+PlantUML 需要 injector 的 `--watch` 模式；`./better-codex` 已默认开启。此次修复后的 PlantUML 模块日志为 `本地 JavaScript 预览已启用（0.10.1）`。工具包版本仍为 0.10.0，原 sidebar renderer 内部版本仍为 0.9.4；模块独立更新，不代表未加载修复。
 
 ## 架构
 
@@ -49,11 +49,25 @@ Node 才执行引擎；不把 WASM 注入 Codex，不改 CSP、Electron main pro
 
 ## 识别与更新
 
-同时识别标准 `pre > code` 和 Codex 的 `[data-markdown-copy="code-block"]` 外壳（后者可以完全没有 `pre`）；只接受 `plantuml` / `puml`：`code/pre` 的 `language-*` / `lang-*` class、`data-language` / `data-lang`，以及代码块自身 toolbar 中明确的语言名。Codex 外壳保留原生 Copy / 换行 toolbar，只隐藏代码视口。**不会因为普通代码中包含 `@startuml` 就自动渲染。** 编辑器、contenteditable 和可识别的 Diff 区域排除。
+同时识别标准 `pre > code` 和 Codex 的 `[data-markdown-copy="code-block"]` 外壳（后者可以完全没有 `pre`）；接受 `plantuml` / `puml` / `plantuml-svg` / `puml-svg`：`code/pre` 的 `language-*` / `lang-*` class、`data-language` / `data-lang`，以及代码块自身 toolbar 中明确的语言名。语言名忽略大小写和首尾空白，支持 toolbar 自身纯文本；不从前一个代码块或 Copy 按钮猜语言。四个 alias 均使用原有本地 SVG 引擎，不需要修改 Obsidian 文档里的 fence。
 
-默认扫描只读代码块，不假定 Codex 有公开 Markdown Extension API；聊天中的同形只读代码块也可能命中。需要只作用于某个文件 Preview 时，使用上述 root selector 限定。未知 DOM 结构不猜测、不替换；debug 中 `preCount > 0` 但 `plantumlBlocks = 0` 时优先检查语言标记适配。
+Codex 外壳保留原生 Copy / 换行 toolbar，只隐藏代码视口。**不会因为普通代码中包含 `@startuml` 就自动渲染。** 编辑器、contenteditable 和可识别的 Diff 区域排除。`plantuml-png` / `plantuml-ascii` 等其他输出格式暂不匹配，不静默改成 SVG。
+
+默认扫描只读代码块，不假定 Codex 有公开 Markdown Extension API；聊天中的同形只读代码块也可能命中。需要只作用于某个文件 Preview 时，使用上述 root selector 限定。未知 DOM 结构不猜测、不替换。
 
 通过 `textContent` 保留转义字符；对无换行的 Shiki `.line` 子节点补换行，并排除行号装饰。只插入自有 sibling，不移动/删除原 code block，不改其 Copy handler。MutationObserver 忽略自有 UI；内容变化使用新 revision，reload 使用新 session，旧异步结果不能覆盖新文件。卸载时移除 UI、还原源码、释放 Blob URL 和 worker。
+
+## 没有显示图片时
+
+先开启 `BETTER_CODEX_DEBUG=1`，打开 Markdown 的渲染预览，再看三个阶段：
+
+1. `block-scan`：`rootCount` 是扫描根数量；`preCount` 是候选代码块数量（含 Codex div 外壳）；`plantumlBlocks` 是匹配数量；`languageCounts` 区分四个 alias；`excludedBlocks` 是编辑器 / Diff 等排除数量。相同扫描结果不重复打印。
+2. `render-complete`：`ok: true` 只说明 Node 引擎已返回 SVG，不等于界面已经显示。
+3. `image-loaded`：SVG 已经在 renderer 的 `<img>` 中加载。失败则是 `render-failed`，包含 `SYNTAX_ERROR`、`IMAGE_LOAD_FAILED` 等状态码。
+
+`rootCount: 0` 优先检查自定义 root selector；有候选却 `plantumlBlocks: 0` 优先检查语言标签或 DOM 适配。记录的是数量和固定语言名称，不输出文件路径、源码或 SVG。
+
+0.10.0 的匹配规则仅接受 `plantuml` / `puml`，因此 `plantuml-svg` 会在识别阶段被跳过，尚未进入引擎。此问题已加入真实浏览器回归测试。截图只能确认语言标签，不能单凭截图确认完整 DOM；当前 Codex build 的最终兼容性仍需本机验证。
 
 ## MVP 限制与安全
 
@@ -75,6 +89,8 @@ npm run test:plantuml
 ```
 
 测试覆盖输入限制、去重/缓存/队列、worker 崩溃/超时恢复、真实引擎（时序/中文/类/组件/活动/状态图）、真实 Chromium DOM、SVG 清理、图片加载失败回退，以及完整 DOM → CDP → Worker → SVG 图片链路。Chrome/Chromium 路径可通过 `BETTER_CODEX_TEST_BROWSER` 指定。
+
+新增 `tests/plantuml-svg-alias.test.mjs`：四个 alias × 六种 DOM 形态、大小写和空白、误匹配防护，以及 `plantuml-svg` 从识别到真实引擎再到图片加载的完整链路。
 
 浏览器 fixture 和真实引擎测试不等于在 macOS Codex 中完成端到端验收；当前用户 build 的 Preview 语言标记与 Blob CSP 仍需首次本机确认。
 
