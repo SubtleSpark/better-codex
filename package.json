@@ -1,16 +1,19 @@
 {
   "name": "better-codex",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "private": true,
   "description": "Local UI enhancements for the Codex/ChatGPT desktop app.",
   "type": "module",
   "scripts": {
     "start": "bash ./scripts/start-macos.sh",
-    "check": "node --check ./src/injector.mjs && node --check ./src/renderer.js && bash -n ./scripts/start-macos.sh",
-    "test:layout": "node --test tests/sidebar-hierarchy.test.mjs"
+    "check": "node --check src/injector.mjs && node --check src/renderer.js && node --check src/plantuml/renderer.js && node --check src/plantuml/bridge.mjs && node --check src/plantuml/service.mjs && node --check src/plantuml/worker.mjs && node --check src/plantuml/policy.mjs && bash -n scripts/start-macos.sh",
+    "test:layout": "node --test tests/sidebar-hierarchy.test.mjs",
+    "test:plantuml": "node --test tests/plantuml*.test.mjs"
   },
-  "engines": {
-    "node": ">=22"
+  "dependencies": {
+    "@plantuml/mcp-js": "0.2.0",
+    "@viz-js/viz": "3.28.0"
   },
+  "engines": { "node": ">=22" },
   "license": "MIT"
 }

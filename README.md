@@ -2,7 +2,7 @@
 
 BetterCodex 是一个面向 Codex / ChatGPT Desktop 的本地 UI 增强工具。
 
-当前先解决一个具体问题：项目和会话很多时，通过颜色标记帮助快速定位目标。
+提供 Sidebar 颜色标记与层级缩进，以及 Markdown 中 PlantUML 的本地 JavaScript 预览。
 
 > BetterCodex 是非官方项目，与 OpenAI 无关联。
 
@@ -15,6 +15,8 @@ BetterCodex 是一个面向 Codex / ChatGPT Desktop 的本地 UI 增强工具。
 - 提供自定义颜色和清除颜色。
 - 颜色配置保存在本地 `localStorage`，不上传远端。
 - 不修改官方 `.app` 或 `app.asar`。
+- 项目下的会话缩进一级。
+- `plantuml` / `puml` 代码块本地渲染为 SVG，支持源码切换、放大、失败回退。
 
 高亮样式保持克制：整行使用对应颜色的轻量透明背景，并保留左侧色条；文字颜色不变。
 
@@ -25,10 +27,10 @@ BetterCodex 不自己绘制右键菜单。
 当前实现会复用 Codex 自己的 React `ContextMenu` provider 和原生 `electronBridge.showContextMenu`：
 
 1. 右键 sidebar 的 project / conversation row。
-2. BetterCodex 从对应 React Fiber 向上找到 `getItems` / `getNativeItems` / `items` provider。
+2. BetterCodex 从对应 React Fiber 向上找到 `getItems` / `items` provider。
 3. 调用 Codex 自己的 provider 获取原始菜单定义。
 4. 使用 Codex 当前 React Intl context 解析原有菜单文案。
-5. 在原菜单定义中追加 `颜色标记` submenu。
+5. 在原菜单定义中追加 `颜色` submenu。
 6. 用 Codex 同样的 native menu 结构调用 `electronBridge.showContextMenu`。
 7. 用户选择原有菜单项时，继续执行 Codex 原来的 `onSelect` callback。
 
@@ -37,7 +39,7 @@ BetterCodex 不自己绘制右键菜单。
 - 原有菜单项和功能保留。
 - 菜单外观、submenu、快捷键和 native macOS 风格仍由 Codex / Electron 提供。
 - BetterCodex 不维护独立 context-menu DOM / CSS。
-- 只有 sidebar 左侧颜色条使用少量 CSS。
+- Sidebar 颜色背景、色条和层级缩进使用少量 CSS。
 
 如果无法定位当前 Codex build 的 menu provider，会自动回退到 Codex 原生右键处理，并在终端输出诊断。
 
@@ -49,13 +51,14 @@ BetterCodex 不自己绘制右键菜单。
 - Node.js 22+
 - Codex / ChatGPT Desktop
 
-没有 npm runtime dependencies，也不需要本地 build step。
+不需要本地 build step。PlantUML 使用已锁定版本的 JavaScript 引擎与 Viz.js，首次需要安装 npm dependencies；不需要 Java 或远程渲染服务。
 
 ## 运行
 
 ```bash
 git clone https://github.com/SubtleSpark/better-codex.git
 cd better-codex
+npm ci --ignore-scripts
 ./better-codex
 ```
 
@@ -75,9 +78,20 @@ Ctrl+C
 2. 在左侧栏找到项目或会话。
 3. 正常右键对应项目或会话。
 4. 在 Codex 原生菜单中进入 **颜色**。
-5. 在横向 Palette 中选择颜色圆点；末尾还提供自定义颜色和清除。
+5. 在原生子菜单中选择颜色圆点；末尾还提供自定义颜色和清除。
 
 Codex 原有右键功能不会被替换。
+
+## PlantUML 预览
+
+启动后，在 Codex 中打开 [docs/PLANTUML-DEMO.md](docs/PLANTUML-DEMO.md)，切换到 **Rendered Markdown Preview**。已识别的 PlantUML 代码块会显示图片；图片加载成功后才隐藏源码，仍可随时切回。渲染只在本机 Node Worker 内完成。
+
+首版只支持自包含图，不支持 `!include`、预处理宏、`!theme`、外部图片和独立 `.puml` 文件预览。默认处理带明确语言标记的只读代码块，聊天中的同类代码块也可能命中；可以用环境变量限定 Preview root。详见 [实现与限制](docs/PLANTUML.md)。
+
+```bash
+# 禁用此功能，保留已有 Sidebar 功能
+BETTER_CODEX_PLANTUML=0 ./better-codex
+```
 
 ## 颜色持久化
 
@@ -106,6 +120,12 @@ scripts/
 src/
   injector.mjs
   renderer.js
+  plantuml/
+    bridge.mjs
+    renderer.js
+    service.mjs
+    worker.mjs
+    policy.mjs
 ```
 
 职责：
@@ -114,7 +134,7 @@ src/
 - `src/renderer.js`：sidebar detection、颜色持久化、React menu provider 发现、swatch icon 生成以及 native menu augmentation。
 - `scripts/start-macos.sh`：启动或重启 Desktop App，并开启 loopback renderer CDP。
 
-这个结构刻意保持简单：项目很小，不引入 bundler、framework 或 UI runtime dependency。
+PlantUML 模块独立于原 Sidebar renderer：通过现有 CDP 交换任务和结果，不新增端口或修改 Electron main process。不引入 bundler 或 UI framework。
 
 ## 开发
 
@@ -122,6 +142,8 @@ src/
 
 ```bash
 npm run check
+npm run test:layout
+npm run test:plantuml
 ```
 
 需要排查 Codex 新版本兼容问题时，可以开启 debug 日志：

@@ -1,0 +1,27 @@
+name: PlantUML
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit
+      - run: npm run check
+      - run: npm run test:plantuml
+  macos-engine:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts --no-audit
+      - run: node --test tests/plantuml-engine.test.mjs tests/plantuml-service.test.mjs tests/plantuml-bridge.test.mjs
