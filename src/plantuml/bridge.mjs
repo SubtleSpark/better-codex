@@ -20,7 +20,7 @@ export class PlantUmlBridge {
     if (!target || target.session !== packet.session) {
       target = { session: packet.session, ready: [], pending: new Set() };
       this.targets.set(targetId, target);
-      this.log('[BetterCodex:plantuml] 本地 JavaScript 预览已启用（0.10.0）。');
+      this.log('[BetterCodex:plantuml] 本地 JavaScript 预览已启用（0.10.1）。');
     }
     if (target.ready.length) {
       const results = target.ready.slice(0, 2);
@@ -29,7 +29,20 @@ export class PlantUmlBridge {
     }
     for (const d of (Array.isArray(packet.diagnostics) ? packet.diagnostics : []).slice(0, 80)) {
       // 不转发 renderer 任意字段，避免意外把源码/本地路径打印出来。
-      if (d.level === 'warn' || this.debug) this.log(`[BetterCodex:plantuml] ${JSON.stringify({ event: String(d.event).slice(0, 64), code: d.code, preCount: d.preCount, plantumlBlocks: d.plantumlBlocks })}`);
+      if (d.level === 'warn' || this.debug) {
+        const entry = { event: String(d.event).slice(0, 64), code: d.code };
+        for (const key of ['rootCount', 'preCount', 'plantumlBlocks', 'excludedBlocks']) {
+          if (Number.isSafeInteger(d[key]) && d[key] >= 0) entry[key] = d[key];
+        }
+        if (d.languageCounts) {
+          entry.languageCounts = {};
+          for (const name of ['plantuml', 'puml', 'plantuml-svg', 'puml-svg']) {
+            const count = d.languageCounts[name];
+            if (Number.isSafeInteger(count) && count >= 0) entry.languageCounts[name] = count;
+          }
+        }
+        this.log(`[BetterCodex:plantuml] ${JSON.stringify(entry)}`);
+      }
     }
     for (const request of (Array.isArray(packet.requests) ? packet.requests : []).slice(0, 2)) {
       if (typeof request?.id !== 'string' || !/^puml-\d+$/.test(request.id) ||
@@ -42,6 +55,7 @@ export class PlantUmlBridge {
         target.pending.delete(key);
         if (!this.closed && this.targets.get(targetId) === target) {
           target.ready.push({ id: request.id, revision: request.revision, ...result });
+          if (this.debug) this.log(`[BetterCodex:plantuml] ${JSON.stringify({ event: 'render-complete', ok: result.ok })}`);
         }
       };
       // 不 await 渲染：图片处理不阻塞 sidebar / 自定义颜色 / CDP watcher。
