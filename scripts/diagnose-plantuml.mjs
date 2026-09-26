@@ -230,16 +230,52 @@ export function guestAllowed(target, number, linked, includeGuests) {
     ['page', 'webview', 'iframe'].includes(target.type);
 }
 
+// CDP Page.Frame.url 不含 #fragment，不能直接与 /json/list 的完整 URL 比较。
+// 保留 path/query/hash 的校验；不使用“同 origin 即允许”或无条件去掉 hash。
+export function matchGuestFrame(frame, targetURL) {
+  try {
+    const expected = new URL(targetURL);
+    const actual = new URL(frame.url);
+    const hasFragmentField = typeof frame.urlFragment === 'string';
+    const embeddedFragment = actual.hash;
+    if (hasFragmentField) actual.hash = frame.urlFragment;
+    const targetHasFragment = Boolean(expected.hash);
+    const frameHasFragment = Boolean(actual.hash);
+    const fullMatch = actual.href === expected.href;
+    const sameDocument = actual.href.split('#')[0] === expected.href.split('#')[0];
+    // 某些 CDP 实现省略 urlFragment：只允许进入 location.href 的原子复核，
+    // 复核不通过时不读取 DOM。不是忽略 hash 后直接授权扫描。
+    const needsLocationCheck = sameDocument && targetHasFragment && !hasFragmentField && !embeddedFragment;
+    const reason = fullMatch
+      ? actual.href === frame.url ? 'exact' : 'fragment-reconstructed'
+      : needsLocationCheck ? 'location-check-required' : sameDocument ? 'fragment-mismatch' : 'document-mismatch';
+    return { permitted: fullMatch || needsLocationCheck, reason, targetHasFragment, frameHasFragment };
+  } catch {
+    return { permitted: false, reason: 'invalid-url', targetHasFragment: false, frameHasFragment: false };
+  }
+}
+
+export function guestProbeExpression(targetURL) {
+  const expected = new URL(targetURL).href;
+  // 再次检查当前文档，覆盖 getFrameTree 与 evaluate 之间发生导航的窗口。
+  // 只传该 guest 自己的 URL，不传其它 target hints；不把 URL 返回到报告。
+  return `(() => {
+    if (location.href !== ${JSON.stringify(expected)}) return { probeSkipped: 'GUEST_URL_CHANGED' };
+    return (${collectPlantUmlDom.toString()})();
+  })()`;
+}
+
 // guest 只检查与可信 App embed 的 URL 精确关联的顶层文档；不递归读它的外部子页面。
 export async function inspectTarget(target, port, emit, { targetHints = [], linkedGuest = false } = {}) {
   const cdp = await connect(validateSocket(target.webSocketDebuggerUrl, port));
   try {
     const frameTree = await cdp.call('Page.getFrameTree');
     const frames = new Map();
+    const guestMatch = linkedGuest ? matchGuestFrame(frameTree.frameTree?.frame, target.url) : null;
     function visit(node, parentAllowed = false, depth = 0) {
       if (!node || depth > 12 || frames.size >= 32) return;
       const inspect = linkedGuest
-        ? depth === 0 && node.frame.url === target.url
+        ? depth === 0 && guestMatch.permitted
         : allowedFrame(node.frame.url, parentAllowed);
       frames.set(node.frame.id, { inspect, frame: frames.size + 1, depth });
       for (const child of node.childFrames || []) visit(child, inspect, depth + 1);
@@ -249,19 +285,28 @@ export async function inspectTarget(target, port, emit, { targetHints = [], link
     const contexts = [...cdp.contexts.values()].filter(c => c.auxData?.isDefault);
     emit({ event: 'contexts', frameCount: frames.size, defaultContexts: contexts.length,
       skippedFrames: [...frames.values()].filter(f => !f.inspect).length });
-    let inspected = 0;
+    if (guestMatch) emit({ event: 'guest-frame-check', ...guestMatch });
+    let inspected = 0, probeFailures = 0;
     for (const context of contexts.slice(0, 16)) {
       const frame = frames.get(context.auxData?.frameId);
       if (!frame?.inspect) continue;
       // 绝不把其它 target 的 URL 列表交给非 App guest。
       const hints = linkedGuest ? [] : targetHints;
-      const result = await cdp.call('Runtime.evaluate', { expression: `(${collectPlantUmlDom.toString()})(${JSON.stringify(hints)})`,
+      const expression = linkedGuest ? guestProbeExpression(target.url)
+        : `(${collectPlantUmlDom.toString()})(${JSON.stringify(hints)})`;
+      const result = await cdp.call('Runtime.evaluate', { expression,
         contextId: context.id, returnByValue: true, silent: true, timeout: 2000 });
-      if (result.exceptionDetails) { emit({ event: 'probe-failed', frame: frame.frame, code: 'DOM_PROBE_EXCEPTION' }); continue; }
+      const report = result.result?.value;
+      const errorCode = result.exceptionDetails ? 'DOM_PROBE_EXCEPTION'
+        : report?.probeSkipped === 'GUEST_URL_CHANGED' ? 'GUEST_URL_CHANGED'
+        : !report || typeof report !== 'object' ? 'EMPTY_DOM_REPORT' : null;
+      if (errorCode) {
+        probeFailures++; emit({ event: 'probe-failed', frame: frame.frame, code: errorCode }); continue;
+      }
       inspected++;
-      emit({ event: 'dom', frame: frame.frame, frameDepth: frame.depth, report: result.result?.value ?? null });
+      emit({ event: 'dom', frame: frame.frame, frameDepth: frame.depth, report });
     }
-    if (!inspected) emit({ event: 'probe-failed', code: 'NO_ALLOWED_DEFAULT_CONTEXT' });
+    if (!inspected && !probeFailures) emit({ event: 'probe-failed', code: 'NO_ALLOWED_DEFAULT_CONTEXT' });
   } finally { cdp.close(); }
 }
 
@@ -280,7 +325,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('INVALID_PORT');
   const emit = packet => console.log(`${PREFIX} ${JSON.stringify(packet)}`);
   const renderer = await fs.readFile(new URL('../src/plantuml/renderer.js', import.meta.url), 'utf8');
-  emit({ event: 'start', reportVersion: 2, expectedModuleVersion: /const VERSION = '([\d.]+)'/.exec(renderer)?.[1] || null,
+  emit({ event: 'start', reportVersion: 3, expectedModuleVersion: /const VERSION = '([\d.]+)'/.exec(renderer)?.[1] || null,
     port, readOnly: true, includeGuests });
   let targets;
   try {
@@ -292,19 +337,25 @@ export async function main(argv = process.argv.slice(2)) {
   const bounded = targets.slice(0, 32);
   const targetHints = bounded.map((t, i) => ({ target: i + 1, url: t.url }));
   const linked = new Set();
-  let inspected = 0, failures = 0, omitted = 0;
+  let inspected = 0, failures = 0, omitted = 0, successfulTargets = 0, documentsRead = 0;
   async function inspect(target, number, linkedGuest) {
     if (inspected >= 8) { omitted++; return; }
     inspected++;
+    let targetDocuments = 0, targetFailed = false;
     try {
       await inspectTarget(target, port, packet => {
+        if (packet.event === 'dom' && packet.report) targetDocuments++;
+        if (packet.event === 'probe-failed') targetFailed = true;
         if (!linkedGuest) for (const embed of packet.report?.embeds || []) {
           for (const n of embed.matchingTargets || []) if (Number.isInteger(n) && n >= 1 && n <= bounded.length) linked.add(n);
         }
         emit({ target: number, ...packet });
       }, { targetHints: linkedGuest ? [] : targetHints, linkedGuest });
-    } catch (error) { failures++; emit({ event: 'target-failed', target: number,
+    } catch (error) { targetFailed = true; emit({ event: 'target-failed', target: number,
       code: /^[A-Z_]+$/.test(error.message) ? error.message : 'DIAGNOSIS_FAILED' }); }
+    documentsRead += targetDocuments;
+    if (targetDocuments) successfulTargets++;
+    if (targetFailed || !targetDocuments) failures++;
   }
   for (const [index, target] of bounded.entries()) {
     const info = classifyTarget(target);
@@ -316,9 +367,11 @@ export async function main(argv = process.argv.slice(2)) {
     emit({ event: 'linked-guest', target: index + 1, ...describeTarget(target), readOnly: true });
     await inspect(target, index + 1, true);
   }
-  emit({ event: 'done', inspected, failures, linkedGuests: linked.size, truncated: targets.length > 32 || omitted > 0 });
+  const truncated = targets.length > 32 || omitted > 0;
+  emit({ event: 'done', inspected, successfulTargets, documentsRead, failures,
+    linkedGuests: linked.size, truncated, incomplete: !successfulTargets || failures > 0 || truncated });
   if (!inspected) emit({ event: 'hint', code: 'NO_APP_TARGET' });
-  if (!inspected || failures) process.exitCode = 1;
+  if (!successfulTargets || failures || truncated) process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -130,7 +130,7 @@ test('诊断 v2：先关联再读 guest，不读取无关 target；默认仍只�
     calls.length = 0; output.length = 0;
     await main(['--port', '9347', '--include-guests']);
     assert.deepEqual([...new Set(calls.map(c => c.socket.split('/').pop()))], ['app', 'guest']);
-    assert.ok(output.some(s => s.includes('"reportVersion":2')));
+    assert.ok(output.some(s => s.includes('"reportVersion":3')));
     assert.ok(output.some(s => s.includes('"event":"linked-guest"')));
     assert.equal(output.join('').includes('PRIVATE'), false);
   } finally { globalThis.WebSocket = saved.ws; globalThis.fetch = saved.fetch; console.log = saved.log; }
