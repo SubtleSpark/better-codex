@@ -14,6 +14,15 @@ export function classifyTarget(target) {
     injectorEligible: target.type === 'page' && entry === 'index' && url.searchParams.get('initialRoute') !== '/avatar-overlay' };
 }
 
+export function describeTarget(target) {
+  let scheme = 'invalid';
+  try {
+    const protocol = new URL(target.url).protocol.slice(0, -1);
+    scheme = ['app', 'codex-sandbox', 'http', 'https', 'file', 'blob', 'data', 'about'].includes(protocol) ? protocol : 'other';
+  } catch {}
+  return { type: ['page', 'webview', 'iframe', 'worker', 'service_worker'].includes(target.type) ? target.type : 'other', scheme };
+}
+
 export function validateSocket(address, port) {
   let url;
   try { url = new URL(address); } catch { throw new Error('INVALID_CDP_SOCKET'); }
@@ -22,8 +31,8 @@ export function validateSocket(address, port) {
   return url.href;
 }
 
-// 此函数在目标页面中执行。只返回数量、固定枚举和 DOM 形状，不返回任何正文/属性原值。
-export function collectPlantUmlDom() {
+// 仅返回结构、固定枚举和布尔值；targetHints 只传给可信 App frame，用于精确关联 WebView。
+export function collectPlantUmlDom(targetHints = []) {
   const names = new Set(['plantuml', 'puml', 'plantuml-svg', 'puml-svg']);
   const shell = '[data-markdown-copy="code-block"]';
   const own = '[data-better-codex-plantuml-ui]';
@@ -43,21 +52,44 @@ export function collectPlantUmlDom() {
   try { if (opts.rootSelector) roots = [...document.querySelectorAll(opts.rootSelector)]; }
   catch { roots = []; invalidRoot = true; }
   const inConfiguredRoot = el => roots.some(root => root === el || root?.contains(el));
-  const limited = new Set(['data-markdown-copy', 'data-language', 'data-lang', 'data-testid', 'data-diff', 'contenteditable', 'role']);
+  const limited = new Set(['data-markdown-copy', 'data-language', 'data-lang', 'data-code-language', 'data-code-lang', 'lang', 'language', 'data-testid', 'data-diff', 'contenteditable', 'role']);
+  function markers(el) {
+    const found = [];
+    for (const attr of el.attributes) {
+      if (!/^(?:data-|lang$|language$)/.test(attr.name)) continue;
+      const value = token(attr.value);
+      if (value) found.push({ attribute: limited.has(attr.name) ? attr.name : 'other-data-attribute', token: value });
+    }
+    for (const c of el.classList) {
+      const value = token(/^(?:language|lang)-(.+)$/i.exec(c)?.[1]);
+      if (value) found.push({ attribute: 'language-class', token: value });
+    }
+    return found.slice(0, 4);
+  }
+  function pseudo(el, position) {
+    const content = getComputedStyle(el, position).content;
+    const present = Boolean(content && !['none', 'normal', '""', "''"].includes(content));
+    // CSS generated content 不在 textContent 中；只输出确认为语言名的值。
+    let value = content;
+    if (value?.length <= 256 && /^(["']).*\1$/s.test(value)) {
+      value = value.slice(1, -1).replace(/\\([0-9a-f]{1,6})\s?/gi, (_, h) => {
+        const n = parseInt(h, 16); return n <= 0x10ffff ? String.fromCodePoint(n) : '';
+      });
+    }
+    return { present, token: token(value) };
+  }
   function shape(el) {
     if (!(el instanceof Element)) return null;
     const style = getComputedStyle(el);
     const rect = el.getBoundingClientRect();
-    const markers = [];
-    for (const v of [el.getAttribute('data-language'), el.getAttribute('data-lang'),
-      ...Array.from(el.classList).map(c => /^(?:language|lang)-(.+)$/i.exec(c)?.[1])]) {
-      const name = nameOf(v); if (name) markers.push(name);
-    }
+    const hints = markers(el);
     return {
-      tag: el.localName, attributes: el.getAttributeNames().filter(n => limited.has(n)),
-      languageMarkers: [...new Set(markers)], semanticShell: el.matches(shell),
+      tag: el.localName.includes('-') ? 'custom-element' : el.localName,
+      attributes: el.getAttributeNames().filter(n => limited.has(n)),
+      languageMarkers: [...new Set(hints.map(x => x.token.language))], languageEvidence: hints,
+      before: pseudo(el, '::before'), after: pseudo(el, '::after'), semanticShell: el.matches(shell),
       toolbar: el.getAttribute('data-markdown-copy') === 'exclude',
-      children: [...el.children].slice(0, 10).map(n => n.localName), childCount: el.childElementCount,
+      children: [...el.children].slice(0, 10).map(n => n.localName.includes('-') ? 'custom-element' : n.localName), childCount: el.childElementCount,
       containsCode: Boolean(el.querySelector('code')), containsPre: Boolean(el.querySelector('pre')),
       excluded: Boolean(el.closest(excluded)), own: Boolean(el.closest(own)), inConfiguredRoot: inConfiguredRoot(el),
       display: style.display, whiteSpace: style.whiteSpace,
@@ -67,14 +99,21 @@ export function collectPlantUmlDom() {
   }
   function location(el) {
     const ancestors = [];
-    for (let n = el, depth = 0; n && depth < 6; n = n.parentElement, depth++) {
+    for (let n = el, depth = 0; n && depth < 6; n = n.parentElement || n.getRootNode()?.host, depth++) {
       ancestors.push({ node: shape(n), previous: shape(n.previousElementSibling), next: shape(n.nextElementSibling) });
     }
     return { insideCode: Boolean(el.closest('pre, code')), ancestors };
   }
+  function safeScheme(value) {
+    try {
+      const s = new URL(value).protocol.slice(0, -1);
+      return ['app', 'codex-sandbox', 'http', 'https', 'file', 'blob', 'data', 'about'].includes(s) ? s : 'other';
+    } catch { return 'empty-or-relative'; }
+  }
   const docs = [{ root: document, scope: 'document' }];
-  const found = [];
+  const found = [], codeCandidates = [], embeds = [];
   const counts = { elements: 0, pre: 0, code: 0, semanticShell: 0, iframe: 0, webview: 0, openShadowRoots: 0 };
+  const seen = new Set();
   const limit = 25000;
   let truncated = false;
   for (let i = 0; i < docs.length && i < 8; i++) {
@@ -94,26 +133,38 @@ export function collectPlantUmlDom() {
       if (el.matches(shell)) counts.semanticShell++;
       if (el.matches('iframe')) counts.iframe++;
       if (el.matches('webview')) counts.webview++;
+      if (el.matches('iframe, webview') && embeds.length < 16) {
+        const addresses = [el.getAttribute('src'), el.src];
+        // getURL 是 Electron 的只读查询；不调用 executeJavaScript / loadURL。
+        try { if (el.matches('webview') && typeof el.getURL === 'function') addresses.push(el.getURL()); } catch {}
+        const rect = el.getBoundingClientRect();
+        embeds.push({ tag: el.localName, scope, scheme: safeScheme(addresses.find(Boolean)), srcdoc: el.hasAttribute('srcdoc'),
+          hasLayout: rect.width > 0 && rect.height > 0,
+          matchingTargets: targetHints.filter(h => typeof h.url === 'string' && !['', 'about:blank', 'about:srcdoc'].includes(h.url) &&
+            addresses.includes(h.url) && targetHints.filter(other => other.url === h.url).length === 1).map(h => h.target).slice(0, 32) });
+      }
+      // 即使 labels=[]，也报告实际 pre/code 的结构，不再让识别失败变成诊断盲区。
+      if (el.matches(`pre, code, ${shell}`)) {
+        const block = el.closest(shell) || el.closest('pre') || el;
+        if (!seen.has(block)) {
+          seen.add(block);
+          if (codeCandidates.length < 8) {
+            const code = block.querySelector('code') || block;
+            const text = code.textContent || '';
+            codeCandidates.push({ scope, hasStartDirective: /^\s*@startuml\b/im.test(text),
+              hasEndDirective: /^\s*@enduml\b/im.test(text), code: shape(code), ...location(block) });
+          } else truncated = true;
+        }
+      }
       if (found.length >= 8) continue;
-      // 只检查独立文本标签和固定语言属性；绝不对整段源码做日志快照。
       const directText = [...el.childNodes].filter(n => n.nodeType === Node.TEXT_NODE)
         .map(n => n.textContent.length <= 80 ? n.textContent : '').join('').trim();
       const label = token(directText);
-      const name = label?.language;
-      const markers = shapeLanguage(el);
-      if (name || markers.length) found.push({ scope, language: name || markers[0],
-        evidence: name ? 'text-label' : 'language-attribute',
-        token: label || shapeToken(el), ...location(el) });
+      const hints = markers(el);
+      if (label || hints.length) found.push({ scope, language: label?.language || hints[0].token.language,
+        evidence: label ? 'text-label' : 'language-attribute', token: label || hints[0].token, ...location(el) });
     }
     if (counts.elements > limit) break;
-  }
-  function shapeToken(el) {
-    return [el.getAttribute('data-language'), el.getAttribute('data-lang'),
-      ...Array.from(el.classList).map(c => /^(?:language|lang)-(.+)$/i.exec(c)?.[1])].map(token).find(Boolean) || null;
-  }
-  function shapeLanguage(el) {
-    return [el.getAttribute('data-language'), el.getAttribute('data-lang'),
-      ...Array.from(el.classList).map(c => /^(?:language|lang)-(.+)$/i.exec(c)?.[1])].map(nameOf).filter(Boolean);
   }
   const panels = [...document.querySelectorAll('section.bc-puml')].slice(0, 8).map(el => {
     const img = el.querySelector('img');
@@ -127,7 +178,7 @@ export function collectPlantUmlDom() {
       sidebarInstalled: Boolean(window.__BETTER_CODEX__), sidebarVersion: version(window.__BETTER_CODEX__?.version) },
     scanRoot: { configured: Boolean(opts.rootSelector), count: roots.length, invalid: invalidRoot },
     ready: document.readyState, focused: document.hasFocus(), visibility: document.visibilityState,
-    counts, truncated, labels: found, panels,
+    counts, truncated, labels: found, codeCandidates, embeds, panels,
   };
 }
 
@@ -174,15 +225,22 @@ function allowedFrame(url, parentAllowed) {
   return parentAllowed && ['about:blank', 'about:srcdoc', ''].includes(url);
 }
 
-// 仅检查 app://- 页面及其同源/继承 origin 的默认上下文，不向外部 checkout/sandbox 注入代码。
-export async function inspectTarget(target, port, emit) {
+export function guestAllowed(target, number, linked, includeGuests) {
+  return includeGuests && linked.has(number) && !classifyTarget(target).inspect &&
+    ['page', 'webview', 'iframe'].includes(target.type);
+}
+
+// guest 只检查与可信 App embed 的 URL 精确关联的顶层文档；不递归读它的外部子页面。
+export async function inspectTarget(target, port, emit, { targetHints = [], linkedGuest = false } = {}) {
   const cdp = await connect(validateSocket(target.webSocketDebuggerUrl, port));
   try {
     const frameTree = await cdp.call('Page.getFrameTree');
     const frames = new Map();
     function visit(node, parentAllowed = false, depth = 0) {
       if (!node || depth > 12 || frames.size >= 32) return;
-      const inspect = allowedFrame(node.frame.url, parentAllowed);
+      const inspect = linkedGuest
+        ? depth === 0 && node.frame.url === target.url
+        : allowedFrame(node.frame.url, parentAllowed);
       frames.set(node.frame.id, { inspect, frame: frames.size + 1, depth });
       for (const child of node.childFrames || []) visit(child, inspect, depth + 1);
     }
@@ -195,8 +253,10 @@ export async function inspectTarget(target, port, emit) {
     for (const context of contexts.slice(0, 16)) {
       const frame = frames.get(context.auxData?.frameId);
       if (!frame?.inspect) continue;
-      const result = await cdp.call('Runtime.evaluate', { expression: `(${collectPlantUmlDom.toString()})()`,
-        contextId: context.id, returnByValue: true, silent: true, timeout: 1500 });
+      // 绝不把其它 target 的 URL 列表交给非 App guest。
+      const hints = linkedGuest ? [] : targetHints;
+      const result = await cdp.call('Runtime.evaluate', { expression: `(${collectPlantUmlDom.toString()})(${JSON.stringify(hints)})`,
+        contextId: context.id, returnByValue: true, silent: true, timeout: 2000 });
       if (result.exceptionDetails) { emit({ event: 'probe-failed', frame: frame.frame, code: 'DOM_PROBE_EXCEPTION' }); continue; }
       inspected++;
       emit({ event: 'dom', frame: frame.frame, frameDepth: frame.depth, report: result.result?.value ?? null });
@@ -207,19 +267,21 @@ export async function inspectTarget(target, port, emit) {
 
 export async function main(argv = process.argv.slice(2)) {
   if (argv.includes('--help')) {
-    console.log('用法：node scripts/diagnose-plantuml.mjs [--port 9347]\n保持 BetterCodex 运行并打开出问题的 Markdown 预览，在另一个终端执行。只读 DOM，不渲染、不清空诊断队列、不输出源码或路径。');
+    console.log('用法：node scripts/diagnose-plantuml.mjs [--port 9347] [--include-guests]\n保持 BetterCodex 运行并打开出问题的 Markdown 预览。只读结构，不输出源码或路径。\n--include-guests 额外读取与 App iframe/WebView URL 精确匹配的 guest；不会安装渲染模块。');
     return;
   }
   let port = Number(process.env.BETTER_CODEX_PORT || 9347);
+  let includeGuests = false;
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--include-guests') { includeGuests = true; continue; }
     if (argv[i] !== '--port' || !argv[i + 1]) throw new Error('INVALID_ARGUMENT');
     port = Number(argv[++i]);
   }
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('INVALID_PORT');
   const emit = packet => console.log(`${PREFIX} ${JSON.stringify(packet)}`);
   const renderer = await fs.readFile(new URL('../src/plantuml/renderer.js', import.meta.url), 'utf8');
-  emit({ event: 'start', reportVersion: 1, expectedModuleVersion: /const VERSION = '([\d.]+)'/.exec(renderer)?.[1] || null,
-    port, readOnly: true });
+  emit({ event: 'start', reportVersion: 2, expectedModuleVersion: /const VERSION = '([\d.]+)'/.exec(renderer)?.[1] || null,
+    port, readOnly: true, includeGuests });
   let targets;
   try {
     const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000), redirect: 'error' });
@@ -227,18 +289,34 @@ export async function main(argv = process.argv.slice(2)) {
     targets = await response.json();
   } catch { throw new Error('CDP_UNAVAILABLE'); }
   if (!Array.isArray(targets)) throw new Error('INVALID_TARGET_LIST');
-  let inspected = 0;
-  let failures = 0;
-  for (const [index, target] of targets.slice(0, 32).entries()) {
-    const info = classifyTarget(target);
-    emit({ event: 'target', target: index + 1, ...info });
-    if (!info.inspect || inspected >= 8) continue;
+  const bounded = targets.slice(0, 32);
+  const targetHints = bounded.map((t, i) => ({ target: i + 1, url: t.url }));
+  const linked = new Set();
+  let inspected = 0, failures = 0, omitted = 0;
+  async function inspect(target, number, linkedGuest) {
+    if (inspected >= 8) { omitted++; return; }
     inspected++;
-    try { await inspectTarget(target, port, packet => emit({ target: index + 1, ...packet })); }
-    catch (error) { failures++; emit({ event: 'target-failed', target: index + 1,
+    try {
+      await inspectTarget(target, port, packet => {
+        if (!linkedGuest) for (const embed of packet.report?.embeds || []) {
+          for (const n of embed.matchingTargets || []) if (Number.isInteger(n) && n >= 1 && n <= bounded.length) linked.add(n);
+        }
+        emit({ target: number, ...packet });
+      }, { targetHints: linkedGuest ? [] : targetHints, linkedGuest });
+    } catch (error) { failures++; emit({ event: 'target-failed', target: number,
       code: /^[A-Z_]+$/.test(error.message) ? error.message : 'DIAGNOSIS_FAILED' }); }
   }
-  emit({ event: 'done', inspected, failures, truncated: targets.length > 32 || targets.filter(t => classifyTarget(t).inspect).length > 8 });
+  for (const [index, target] of bounded.entries()) {
+    const info = classifyTarget(target);
+    emit({ event: 'target', target: index + 1, ...info, ...describeTarget(target) });
+    if (info.inspect) await inspect(target, index + 1, false);
+  }
+  for (const [index, target] of bounded.entries()) {
+    if (!guestAllowed(target, index + 1, linked, includeGuests)) continue;
+    emit({ event: 'linked-guest', target: index + 1, ...describeTarget(target), readOnly: true });
+    await inspect(target, index + 1, true);
+  }
+  emit({ event: 'done', inspected, failures, linkedGuests: linked.size, truncated: targets.length > 32 || omitted > 0 });
   if (!inspected) emit({ event: 'hint', code: 'NO_APP_TARGET' });
   if (!inspected || failures) process.exitCode = 1;
 }

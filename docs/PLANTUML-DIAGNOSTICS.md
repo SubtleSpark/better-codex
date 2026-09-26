@@ -1,40 +1,41 @@
-# PlantUML 未显示：只读现场诊断
+# PlantUML Preview 现场诊断
 
-`block-scan` 只能说明已知选择器命中了多少节点，不能证明文件 Preview 使用了同一 DOM 结构。这个命令采集实际页面结构，不修改选择器、不触发渲染、不清空运行中的请求/日志队列。
+诊断器与运行中的渲染器独立。不修改页面、文档、CSP 或渲染逻辑，不清空已有请求队列，不执行 PlantUML 引擎。
 
-## 使用
+## 使用（reportVersion 2）
 
-保持 `./better-codex` 在原终端运行，在 Codex 中打开有问题的 **Markdown 渲染预览**，然后在另一个终端、仓库目录执行：
-
-```bash
-npm run diagnose:plantuml 2>&1 | tee /tmp/better-codex-plantuml-diagnose.log
-```
-
-不需要重新安装 dependencies，不需要重启 Codex。非默认 CDP port：
+保持 BetterCodex 运行，让 Codex 停在出问题的 **Markdown 渲染预览**。另开终端，在仓库目录执行：
 
 ```bash
-npm run diagnose:plantuml -- --port 9450
+npm run diagnose:plantuml -- --include-guests 2>&1 | tee /tmp/better-codex-plantuml-diagnose.log
 ```
 
-也可以使用已有 `BETTER_CODEX_PORT` 环境变量。命令只连接 `127.0.0.1`；不接受远程 host。出现 `CDP_UNAVAILABLE` 时，先确认原 BetterCodex 正在运行，并使用相同端口。
+不需要重新安装 dependencies 或重启 Codex。使用非默认 CDP port 时追加 `--port 9450`。
 
-## 报告内容
+不加 `--include-guests` 时，仍然只检查本地 `app://-` 文档。加上该参数后，先从 App 文档及 open Shadow Root 读取 iframe/WebView 的 src（或 WebView 的只读 getURL），再与 CDP target URL 做精确关联；只对关联到的 guest 顶层文档采集结构。不会读取无关联的其它 target、guest 的外部子页面；空白 URL、重复 URL 不作为可靠关联。不会向 guest 安装渲染模块，也不会把其它 target 的 URL 列表传入 guest。
 
-- `start.expectedModuleVersion`：当前 checkout 的 PlantUML 模块版本。与 `dom.report.module.version` 对照，区分更新了文件但仍运行旧进程的情况。
-- `target`：主窗口、独立窗口、其他 App 页面；`injectorEligible` 表示当前 injector 是否会选中该 target。不会打印窗口标题、原始 URL 或 query。
-- `contexts` / `dom.frameDepth`：同源 App iframe 的默认执行上下文。第三方页面跳过；不扩大运行时注入范围。
-- `scanRoot`：运行中 root selector 是否配置、是否有效、命中几个节点；不打印 selector 原值。
-- `counts`：`pre`、`code`、Codex semantic shell、iframe、webview 和 open Shadow root 数量。
-- `labels`：明确的 PlantUML 标签位置、祖先和相邻节点的结构，以及是否在编辑器/已知排除区域或扫描区域内。
-- `labels[].token`：标签的 Unicode code points；可区分 ASCII `-`、外观相似的横线与零宽字符。仅诊断，不自动改 Markdown 或接受新语言。
-- `panels`：BetterCodex 预览面板、图片是否已解码、重试入口是否可见。不返回图内容。
+## 本轮已知信息
 
-报告只输出固定枚举、版本、计数和 DOM 结构；不返回源码、SVG、文件名、路径、任意 CSS class/ID 或属性值。仍建议发送前自行检查日志。
+用户 reportVersion 1 日志：主窗口中 PlantUML 0.10.1 已安装，1 个 pre / 1 个 code，无 semantic shell、无已识别语言标签、无预览面板；同时存在 2 个 WebView、2 个 iframe、4 个 open Shadow Root，3 个非 App target 被跳过。
 
-一次最多检查 8 个本地 App target，每个 target 最多 16 个默认 context，每个 document 最多 25,000 个元素 / 8 个 open Shadow root / 8 处标签。`truncated` 为 true 表示报告不完整。closed Shadow DOM 无法通过本脚本读取；非 App 的 iframe/webview 只报告跳过，不读取内容。限时失败会打印状态码，不能把它解释为页面里没有 PlantUML。
+这不证明 SVG 引擎失败，也不能直接证明 Markdown 一定在 WebView。旧诊断器已经遍历 open Shadow Root，但遗漏了未识别的代码块形状、CSS generated content，且没有关联 guest 文档。本次只补足现场证据，不做猜测性渲染修复。
 
-## 如何判断
+## 如何看结果
 
-没有安装模块、安装版本与 checkout 不一致、标签在独立窗口/iframe、标签落在内部 toolbar 而非已知语言属性、root selector 未命中、图片未加载，是不同问题。只有结合现场报告才能确定改哪一层；不要再通过替换 `~~~` / 三个反引号或扩大 DOM 选择器盲试。
+- `start.reportVersion = 2`：新版诊断器。
+- `target.type / scheme`：固定分类；不输出 URL、host、path、query、标题。
+- `codeCandidates`：即使 `labels=[]`，仍记录最多 8 个代码块的标签、祖先/相邻节点形状，以及是否含起止指令的布尔值。无源码正文。
+- `before / after`：CSS 伪元素是否存在；只有确认为四个 PlantUML alias 的 content 才记录语言 token。
+- `languageEvidence`：识别其它语言属性；未知属性名用固定类别代替，不输出原值。
+- `embeds.matchingTargets`：App iframe/WebView 对应的 target 序号。
+- `linked-guest`：显式开启 guest 诊断后实际检查的 guest。
+- `panels`：已有图片的加载/解码状态；仅返回布尔值。
+- `truncated=true`：达到数量上限，不把缺失结果当作不存在。
 
-本次只增加诊断工具与测试，不修改现有 PlantUML / Sidebar 运行时代码，也不声称已修复用户 App 中的渲染问题。
+请上传日志文件；不需要截图 DOM，也不要粘贴完整 HTML 或源码。结果只包含固定枚举、结构和数量，不输出文件名、图源码、SVG、CSS class/ID 原值或完整 URL。
+
+## 验证边界
+
+新增 5 个测试覆盖真实 Chromium 的 CSS 标签/代码结构、open Shadow Root、URL 关联与隐私过滤，以及 CDP guest 过滤、导航变化和 CLI 的两阶段只读流程。原有诊断测试保留。
+
+自动测试只能验证诊断器行为；用户实际 App 的 Preview 位于何处，仍以本机 v2 日志为准。
